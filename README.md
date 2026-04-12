@@ -126,7 +126,7 @@ UE4.27 资源整理插件 - 自动按类型组织项目资源的高级工具
 
 ## 许可证
 
-Copyright UEMaster. All Rights Reserved.
+Copyright Asking_PLQ. All Rights Reserved.
 
 ## 致谢
 
