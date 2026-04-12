@@ -1,0 +1,40 @@
+{
+    "FileVersion": 3,
+    "Version": 2,
+    "VersionName": "2.0",
+    "FriendlyName": "Asset Organizer",
+    "Description": "Advanced asset organization plugin with 62+ type support, lazy folder creation, async execution, and history/undo functionality.",
+    "Category": "Editor",
+    "CreatedBy": "Asking_PLQ",
+    "CreatedByURL": "",
+    "DocsURL": "",
+    "MarketplaceURL": "",
+    "SupportURL": "",
+    "EngineVersion": "4.27.0",
+    "CanContainContent": false,
+    "IsBetaVersion": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "AssetOrganizer",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "EditorScriptingUtilities",
+            "Enabled": true
+        },
+        {
+            "Name": "Niagara",
+            "Enabled": true,
+            "Optional": true
+        },
+        {
+            "Name": "LevelSequence",
+            "Enabled": true,
+            "Optional": true
+        }
+    ]
+}
