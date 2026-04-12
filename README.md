@@ -1,6 +1,9 @@
 # Asset Organizer for UE4.27
 
 UE4.27 资源整理插件 - 自动按类型组织项目资源的高级工具
+支持一键整理，版本回溯，设置自定义文件夹
+
+<img width="1920" height="1032" alt="界面" src="https://github.com/user-attachments/assets/3947b4fe-6a7c-4f58-9294-94132b2f57db" />
 
 ## 功能特性
 
