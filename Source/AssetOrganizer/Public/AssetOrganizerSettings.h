@@ -4,20 +4,29 @@
 
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
+#include "Engine/DeveloperSettings.h"
 #include "AssetOrganizerTypes.h"
 #include "AssetOrganizerSettings.generated.h"
+
+DECLARE_MULTICAST_DELEGATE(FOnCustomRulesChanged);
 
 /**
  * Plugin settings - saved to project config
  * Supports 62+ asset types with full customization
  */
-UCLASS(config = AssetOrganizer, defaultconfig)
-class UAssetOrganizerSettings : public UObject
+UCLASS(config = AssetOrganizer, defaultconfig, meta = (DisplayName = "Asset Organizer"))
+class UAssetOrganizerSettings : public UDeveloperSettings
 {
     GENERATED_BODY()
 
 public:
     UAssetOrganizerSettings();
+
+    /** Static delegate broadcast when CustomRules array changes */
+    static FOnCustomRulesChanged OnCustomRulesChanged;
+
+    virtual FName GetCategoryName() const override;
+    virtual FName GetSectionName() const override;
 
     /** Root path to scan for assets */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category = "General")
@@ -54,6 +63,20 @@ public:
     /** Folders to skip during organization */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category = "Advanced")
     TArray<FString> ExcludedFolders;
+
+    /** Folders whose assets will NEVER be moved (whitelist).
+     *  These are also written into FOrganizeConfig.WhitelistedFolders at organize time. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category = "Whitelist",
+              meta = (ToolTip = "Assets in these folders will never be moved during organizing."))
+    TArray<FString> WhitelistedFolders;
+
+    /** Auto-run reference verification pass after organize (checks all moved assets). */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category = "Verification")
+    bool bRunVerificationAfterOrganize;
+
+    /** If verification finds broken refs, attempt auto-fix via redirectors. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category = "Verification")
+    bool bAutoFixBrokenReferences;
 
     /** Maximum number of history entries to keep */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category = "History",
@@ -103,6 +126,13 @@ public:
     /** Save settings to config */
     UFUNCTION(BlueprintCallable, Category = "Asset Organizer")
     void SaveSettings();
+
+    /** Check if a folder path is whitelisted (prefix-match). */
+    UFUNCTION(BlueprintCallable, Category = "Asset Organizer")
+    bool IsFolderWhitelisted(const FString& FolderPath) const;
+
+    /** One-time migration: copy old ExcludedFolders INI key into WhitelistedFolders. */
+    void MigrateFromLegacyExcludedFolders();
 
     /** Get all enabled types that exist in project */
     UFUNCTION(BlueprintCallable, Category = "Asset Organizer")

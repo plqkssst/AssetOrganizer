@@ -4,12 +4,26 @@
 
 #define LOCTEXT_NAMESPACE "AssetOrganizer"
 
+FOnCustomRulesChanged UAssetOrganizerSettings::OnCustomRulesChanged;
+
+FName UAssetOrganizerSettings::GetCategoryName() const
+{
+    return FName(TEXT("Plugins"));
+}
+
+FName UAssetOrganizerSettings::GetSectionName() const
+{
+    return FName(TEXT("Asset Organizer"));
+}
+
 UAssetOrganizerSettings::UAssetOrganizerSettings()
     : RootPath(TEXT("/Game"))
     , bCreateFolders(true)
     , bFixReferences(true)
     , bCleanEmptyFolders(true)
     , FolderStrategy(EFolderCreationStrategy::LazyCreate)
+    , bRunVerificationAfterOrganize(true)
+    , bAutoFixBrokenReferences(false)
     , MaxHistoryEntries(20)
     , bEnableHistory(true)
     , bAutoSaveHistory(true)
@@ -30,12 +44,19 @@ void UAssetOrganizerSettings::PostInitProperties()
     {
         InitializeDefaultAssetTypes();
     }
+
+    MigrateFromLegacyExcludedFolders();
 }
 
 void UAssetOrganizerSettings::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
     Super::PostEditChangeProperty(PropertyChangedEvent);
     SaveConfig();
+
+    if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UAssetOrganizerSettings, CustomRules))
+    {
+        OnCustomRulesChanged.Broadcast();
+    }
 }
 
 void UAssetOrganizerSettings::ResetToDefault()
@@ -47,6 +68,9 @@ void UAssetOrganizerSettings::ResetToDefault()
     FolderStrategy = EFolderCreationStrategy::LazyCreate;
     RootFolderConfig = FRootFolderConfig();
     ExcludedFolders.Empty();
+    WhitelistedFolders.Empty();
+    bRunVerificationAfterOrganize = true;
+    bAutoFixBrokenReferences = false;
     MaxHistoryEntries = 20;
     bEnableHistory = true;
     bAutoSaveHistory = true;
@@ -535,6 +559,29 @@ TArray<FString> UAssetOrganizerSettings::GetNeededFolders(const TArray<FAssetDat
     }
 
     return NeededFolders.Array();
+}
+
+bool UAssetOrganizerSettings::IsFolderWhitelisted(const FString& FolderPath) const
+{
+    for (const FString& WL : WhitelistedFolders)
+    {
+        if (!WL.IsEmpty() && FolderPath.StartsWith(WL))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void UAssetOrganizerSettings::MigrateFromLegacyExcludedFolders()
+{
+    // One-time migration: if ExcludedFolders has values but WhitelistedFolders is empty,
+    // copy them over and save
+    if (ExcludedFolders.Num() > 0 && WhitelistedFolders.Num() == 0)
+    {
+        WhitelistedFolders = ExcludedFolders;
+        SaveConfig();
+    }
 }
 
 #undef LOCTEXT_NAMESPACE

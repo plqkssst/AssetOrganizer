@@ -2,6 +2,7 @@
 
 #include "AssetOrganizerModule.h"
 #include "SAssetOrganizerWidget.h"
+#include "CustomAssetRuleCustomization.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "LevelEditor.h"
 #include "ToolMenus.h"
@@ -11,6 +12,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Interfaces/IPluginManager.h"
+#include "PropertyEditorModule.h"
 
 #define LOCTEXT_NAMESPACE "AssetOrganizer"
 
@@ -87,10 +89,24 @@ void FAssetOrganizerModule::StartupModule()
     UToolMenus::RegisterStartupCallback(
         FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FAssetOrganizerModule::RegisterMenus)
     );
+
+    // Register custom property type editor for FCustomAssetRule.ClassName dropdown
+    FPropertyEditorModule& PropertyEditorModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+    PropertyEditorModule.RegisterCustomPropertyTypeLayout(
+        "CustomAssetRule",
+        FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCustomAssetRuleCustomization::MakeInstance)
+    );
 }
 
 void FAssetOrganizerModule::ShutdownModule()
 {
+    // Unregister custom property type editor
+    if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+    {
+        FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+        PropertyEditorModule.UnregisterCustomPropertyTypeLayout("CustomAssetRule");
+    }
+
     UToolMenus::UnRegisterStartupCallback(this);
     UToolMenus::UnregisterOwner(this);
     FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(TabName);

@@ -334,6 +334,86 @@ enum class EFolderCreationStrategy : uint8
     OnDemand                // Create folder just before first asset move
 };
 
+/** Post-organize report — moved asset record */
+USTRUCT()
+struct FMovedAssetRecord
+{
+    GENERATED_BODY()
+
+    UPROPERTY()
+    FString OriginalPath;      // /Game/OldFolder/MyAsset
+
+    UPROPERTY()
+    FString DestinationPath;   // /Game/Blueprints/Characters/MyActor
+
+    UPROPERTY()
+    FName AssetType;           // e.g. "Blueprint"
+
+    FMovedAssetRecord() {}
+    FMovedAssetRecord(const FString& InOrig, const FString& InDest, const FName& InType)
+        : OriginalPath(InOrig), DestinationPath(InDest), AssetType(InType) {}
+};
+
+/** Post-organize report — broken reference record */
+USTRUCT()
+struct FBrokenReferenceRecord
+{
+    GENERATED_BODY()
+
+    UPROPERTY()
+    FString AssetPath;          // asset that has the broken ref
+
+    UPROPERTY()
+    FString BrokenDependency;   // the missing/broken target
+
+    UPROPERTY()
+    bool bAutoFixed = false;    // whether redirector fixup resolved it
+
+    FBrokenReferenceRecord() : bAutoFixed(false) {}
+};
+
+/** Post-organize summary report */
+USTRUCT()
+struct FOrganizeReport
+{
+    GENERATED_BODY()
+
+    UPROPERTY()
+    TArray<FMovedAssetRecord> MovedAssets;
+
+    UPROPERTY()
+    TArray<FBrokenReferenceRecord> BrokenReferences;
+
+    UPROPERTY()
+    TArray<FString> SkippedWhitelistedAssets;
+
+    UPROPERTY()
+    TArray<FString> RedirectorsFixed;
+
+    UPROPERTY()
+    int32 TotalScanned = 0;
+
+    UPROPERTY()
+    int32 TotalMoved = 0;
+
+    UPROPERTY()
+    int32 TotalSkipped = 0;
+
+    UPROPERTY()
+    int32 BrokenRefCount = 0;
+
+    UPROPERTY()
+    bool bVerificationRan = false;
+
+    FOrganizeReport()
+        : TotalScanned(0), TotalMoved(0), TotalSkipped(0)
+        , BrokenRefCount(0), bVerificationRan(false)
+    {}
+
+    bool IsClean() const { return BrokenRefCount == 0 && !BrokenReferences.ContainsByPredicate(
+        [](const FBrokenReferenceRecord& R){ return !R.bAutoFixed; }); }
+};
+
 /** Organization configuration */
 USTRUCT(BlueprintType)
 struct FOrganizeConfig
@@ -364,6 +444,17 @@ struct FOrganizeConfig
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Advanced")
     TArray<FString> ExcludedFolders;
 
+    /** Folders whose assets will NEVER be moved (whitelist).
+     *  Stored as /Game/-relative paths, e.g. "/Game/Core".
+     *  Prefix-matched: "/Game/Core" protects "/Game/Core/Sub/Asset" too. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Whitelist")
+    TArray<FString> WhitelistedFolders;
+
+    /** If true, scan whitelisted-folder assets and fix their redirectors
+     *  after moved assets leave redirectors at original paths. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Whitelist")
+    bool bUpdateWhitelistedAssetReferences = true;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Advanced")
     bool bSaveHistory = true;
 
@@ -380,6 +471,7 @@ struct FOrganizeConfig
         , bCleanEmptyFolders(true)
         , bDryRun(false)
         , FolderStrategy(EFolderCreationStrategy::LazyCreate)
+        , bUpdateWhitelistedAssetReferences(true)
         , bSaveHistory(true)
         , bAutoRollbackOnCancel(true)
     {}

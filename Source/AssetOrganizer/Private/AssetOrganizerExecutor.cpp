@@ -486,7 +486,13 @@ FOrganizeResult FAssetOrganizerExecutor::OrganizeAssets(
     Log(TEXT("Starting asset organization..."));
     Log(FString::Printf(TEXT("Root path: %s"), *Config.RootPath));
 
-    TArray<FAssetData> AllAssets = GetAssetsInPath(Config.RootPath, true, Config.ExcludedFolders);
+    // Merge ExcludedFolders + WhitelistedFolders into a single exclusion list for the scan
+    TArray<FString> AllExcluded = Config.ExcludedFolders;
+    for (const FString& WL : Config.WhitelistedFolders)
+    {
+        AllExcluded.AddUnique(WL);
+    }
+    TArray<FAssetData> AllAssets = GetAssetsInPath(Config.RootPath, true, AllExcluded);
     Result.TotalAssets = AllAssets.Num();
 
     Log(FString::Printf(TEXT("Found %d assets to process"), Result.TotalAssets));
@@ -692,6 +698,55 @@ FOrganizeResult FAssetOrganizerExecutor::OrganizeAssets(
         HistoryEntry.MovedAssets = Result.MovedAssets;
         Result.HistoryFilePath = SaveHistory(HistoryEntry);
         Log(FString::Printf(TEXT("History saved to: %s"), *Result.HistoryFilePath));
+    }
+
+    // ── Step 9.5: Post-organize verification pass (NEW) ─────────────────────
+    // Build FOrganizeReport from HistoryEntry records for verification
+    FOrganizeReport OrganizeReport;
+    OrganizeReport.TotalScanned  = Result.TotalAssets;
+    OrganizeReport.TotalMoved    = Result.MovedAssets;
+    OrganizeReport.TotalSkipped  = Result.SkippedAssets;
+
+    // Populate moved-asset records from history
+    for (const FMoveRecord& Rec : HistoryEntry.Records)
+    {
+        OrganizeReport.MovedAssets.Add(
+            FMovedAssetRecord(Rec.OldPath, Rec.NewPath, Rec.AssetClass));
+    }
+
+    if (!Result.bWasCancelled && Result.MovedAssets > 0)
+    {
+        const UAssetOrganizerSettings* VerifySettings = GetDefault<UAssetOrganizerSettings>();
+        if (VerifySettings && VerifySettings->bRunVerificationAfterOrganize)
+        {
+            if (ProgressCallback.IsBound())
+                ProgressCallback.Execute(0.80f, LOCTEXT("Verifying", "Verifying references..."));
+
+            Log(TEXT("Running post-organize reference verification..."));
+            VerifyReferences(OrganizeReport.MovedAssets, OrganizeReport);
+
+            OrganizeReport.bVerificationRan = true;
+
+            if (OrganizeReport.BrokenRefCount > 0)
+            {
+                Log(FString::Printf(TEXT("[WARN] %d broken reference(s) detected after organize!"),
+                    OrganizeReport.BrokenRefCount));
+                Result.Warnings.Add(FString::Printf(
+                    TEXT("%d broken reference(s) detected. Check the Organize Report for details."),
+                    OrganizeReport.BrokenRefCount));
+            }
+            else
+            {
+                Log(TEXT("Reference verification passed — all references intact."));
+            }
+        }
+
+        // Update whitelisted folder references if enabled
+        if (Config.bUpdateWhitelistedAssetReferences && Config.WhitelistedFolders.Num() > 0)
+        {
+            Log(TEXT("Updating references in whitelisted folders..."));
+            UpdateWhitelistedFolderReferences(Config, OrganizeReport, LogCallback);
+        }
     }
 
     // ── Step 10: Additional reference checks and level save ──────────────────
@@ -2137,6 +2192,184 @@ void FAssetOrganizerExecutor::RestoreLevelReferencesAfterRollback(
     AssetRegistry.ScanPathsSynchronous({TEXT("/Game")});
 
     Log(FString::Printf(TEXT("Reference restoration complete. Fixed %d levels, %d references."), FixedLevels, TotalFixedRefs));
+}
+
+
+// ============================================================
+// Whitelist Check
+// ============================================================
+
+bool FAssetOrganizerExecutor::IsAssetWhitelisted(const FAssetData& Asset, const FOrganizeConfig& Config)
+{
+    if (Config.WhitelistedFolders.Num() == 0)
+        return false;
+
+    FString PackagePath = Asset.PackagePath.ToString();
+    for (const FString& WL : Config.WhitelistedFolders)
+    {
+        if (!WL.IsEmpty() && PackagePath.StartsWith(WL))
+            return true;
+    }
+    return false;
+}
+
+// ============================================================
+// Post-Organize Reference Verification
+// ============================================================
+
+void FAssetOrganizerExecutor::VerifyReferences(
+    const TArray<FMovedAssetRecord>& MovedAssets,
+    FOrganizeReport& OutReport)
+{
+    FAssetRegistryModule& ARModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+    IAssetRegistry& AssetRegistry = ARModule.Get();
+
+    // Force sync so registry reflects post-move state
+    AssetRegistry.SearchAllAssets(/*bSynchronousSearch=*/true);
+
+    for (const FMovedAssetRecord& Record : MovedAssets)
+    {
+        FName PackageName(*FPackageName::ObjectPathToPackageName(Record.DestinationPath));
+
+        TArray<FName> Dependencies;
+        AssetRegistry.GetDependencies(PackageName, Dependencies,
+            UE::AssetRegistry::EDependencyCategory::Package);
+
+        for (const FName& Dep : Dependencies)
+        {
+            FAssetData DepAsset = AssetRegistry.GetAssetByObjectPath(Dep);
+            if (!DepAsset.IsValid())
+            {
+                FBrokenReferenceRecord Broken;
+                Broken.AssetPath        = Record.DestinationPath;
+                Broken.BrokenDependency = Dep.ToString();
+                Broken.bAutoFixed       = false;
+                OutReport.BrokenReferences.Add(Broken);
+                OutReport.BrokenRefCount++;
+            }
+        }
+    }
+
+    // Attempt auto-fix if configured
+    const UAssetOrganizerSettings* Settings = GetDefault<UAssetOrganizerSettings>();
+    if (Settings && Settings->bAutoFixBrokenReferences && OutReport.BrokenRefCount > 0)
+    {
+        AttemptAutoFixBrokenReferences(OutReport);
+    }
+}
+
+void FAssetOrganizerExecutor::AttemptAutoFixBrokenReferences(FOrganizeReport& OutReport)
+{
+    FAssetRegistryModule& ARModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+    IAssetRegistry& AssetRegistry = ARModule.Get();
+
+    FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+    IAssetTools& AssetTools = AssetToolsModule.Get();
+
+    // Collect all redirectors under /Game
+    TArray<FAssetData> RedirectorAssets;
+    FARFilter Filter;
+    Filter.ClassNames.Add(FName(TEXT("ObjectRedirector")));
+    Filter.PackagePaths.Add(FName(TEXT("/Game")));
+    Filter.bRecursivePaths = true;
+    AssetRegistry.GetAssets(Filter, RedirectorAssets);
+
+    TArray<UObjectRedirector*> Redirectors;
+    for (const FAssetData& RedirData : RedirectorAssets)
+    {
+        if (UObjectRedirector* Redirector = Cast<UObjectRedirector>(RedirData.GetAsset()))
+        {
+            Redirectors.Add(Redirector);
+        }
+    }
+
+    if (Redirectors.Num() > 0)
+    {
+        AssetTools.FixupReferencers(Redirectors);
+    }
+
+    // Re-check which broken refs are now resolved
+    for (FBrokenReferenceRecord& Record : OutReport.BrokenReferences)
+    {
+        if (!Record.bAutoFixed)
+        {
+            FAssetData Check = AssetRegistry.GetAssetByObjectPath(FName(*Record.BrokenDependency));
+            if (Check.IsValid())
+            {
+                Record.bAutoFixed = true;
+                OutReport.BrokenRefCount = FMath::Max(0, OutReport.BrokenRefCount - 1);
+            }
+        }
+    }
+}
+
+// ============================================================
+// Update Whitelisted Folder References
+// ============================================================
+
+void FAssetOrganizerExecutor::UpdateWhitelistedFolderReferences(
+    const FOrganizeConfig& Config,
+    const FOrganizeReport& Report,
+    const FOnLog& LogCallback)
+{
+    if (!Config.bUpdateWhitelistedAssetReferences)
+        return;
+    if (Config.WhitelistedFolders.Num() == 0)
+        return;
+    if (Report.MovedAssets.Num() == 0)
+        return;
+
+    FAssetRegistryModule& ARModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+    IAssetRegistry& AssetRegistry = ARModule.Get();
+
+    FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+    IAssetTools& AssetTools = AssetToolsModule.Get();
+
+    // Build a set of original paths that were moved
+    TSet<FString> MovedOriginalPaths;
+    for (const FMovedAssetRecord& Rec : Report.MovedAssets)
+    {
+        MovedOriginalPaths.Add(Rec.OriginalPath);
+    }
+
+    TArray<UObjectRedirector*> RedirectorsToFix;
+
+    for (const FString& WLFolder : Config.WhitelistedFolders)
+    {
+        TArray<FAssetData> WLAssets;
+        ARModule.Get().GetAssetsByPath(FName(*WLFolder), WLAssets, /*bRecursive=*/true);
+
+        for (const FAssetData& Asset : WLAssets)
+        {
+            TArray<FName> Deps;
+            AssetRegistry.GetDependencies(Asset.PackageName, Deps,
+                UE::AssetRegistry::EDependencyCategory::Package);
+
+            for (const FName& Dep : Deps)
+            {
+                FString DepStr = Dep.ToString();
+                if (MovedOriginalPaths.Contains(DepStr))
+                {
+                    // Load redirector at original path and collect for fixup
+                    if (UObjectRedirector* Redir = LoadObject<UObjectRedirector>(nullptr, *DepStr))
+                    {
+                        RedirectorsToFix.AddUnique(Redir);
+                    }
+                }
+            }
+        }
+    }
+
+    if (RedirectorsToFix.Num() > 0)
+    {
+        AssetTools.FixupReferencers(RedirectorsToFix);
+        if (LogCallback.IsBound())
+        {
+            LogCallback.Execute(FString::Printf(
+                TEXT("Fixed %d redirector(s) for whitelisted folder assets"),
+                RedirectorsToFix.Num()));
+        }
+    }
 }
 
 #undef LOCTEXT_NAMESPACE

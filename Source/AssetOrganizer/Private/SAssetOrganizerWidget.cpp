@@ -33,6 +33,7 @@
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
 #include "Containers/Ticker.h"
+#include "Framework/Application/SlateApplication.h"
 
 #define LOCTEXT_NAMESPACE "AssetOrganizerUI"
 
@@ -70,6 +71,8 @@ namespace AOColors
 // ─────────────────────────────────────────────────────────────────────────────
 SAssetOrganizerWidget::~SAssetOrganizerWidget()
 {
+    UAssetOrganizerSettings::OnCustomRulesChanged.RemoveAll(this);
+
     // Unregister asset registry delegates
     FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry");
     if (AssetRegistryModule)
@@ -87,6 +90,12 @@ SAssetOrganizerWidget::~SAssetOrganizerWidget()
 void SAssetOrganizerWidget::Construct(const FArguments& InArgs)
 {
     LoadSettings();
+
+    if (Settings)
+    {
+        UAssetOrganizerSettings::OnCustomRulesChanged.AddSP(
+            this, &SAssetOrganizerWidget::OnCustomRulesExternallyChanged);
+    }
 
     // Check if settings loaded successfully
     if (!Settings)
@@ -156,6 +165,17 @@ void SAssetOrganizerWidget::Construct(const FArguments& InArgs)
             ]
         ]
 
+        // Whitelist panel (collapsed by default)
+        + SVerticalBox::Slot()
+        .AutoHeight()
+        [
+            SAssignNew(WhitelistPanel, SBox)
+            .Visibility(EVisibility::Collapsed)
+            [
+                BuildWhitelistPanel()
+            ]
+        ]
+
         // Table header
         + SVerticalBox::Slot()
         .AutoHeight()
@@ -210,6 +230,62 @@ void SAssetOrganizerWidget::Construct(const FArguments& InArgs)
     RebuildCategoryList();
     RefreshHistoryList();
     RebuildHistoryListUI();
+
+    // Initialize whitelist data from settings and populate UI
+    if (Settings)
+    {
+        WhitelistFolders = Settings->WhitelistedFolders;
+        if (WhitelistContainer.IsValid())
+        {
+            WhitelistContainer->ClearChildren();
+            for (int32 i = 0; i < WhitelistFolders.Num(); ++i)
+            {
+                const FString FolderPath = WhitelistFolders[i];
+                const int32 Idx = i;
+                WhitelistContainer->AddSlot()
+                    .AutoHeight()
+                    .Padding(FMargin(0.f, 1.f))
+                    [
+                        SNew(SBorder)
+                        .BorderBackgroundColor(FSlateColor(AOColors::BgRow))
+                        .Padding(FMargin(8.f, 3.f))
+                        [
+                            SNew(SHorizontalBox)
+                            + SHorizontalBox::Slot()
+                            .FillWidth(1.f)
+                            .VAlign(VAlign_Center)
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(FolderPath))
+                                .Font(FCoreStyle::Get().GetFontStyle("Mono"))
+                                .ColorAndOpacity(FSlateColor(AOColors::TextSecondary))
+                            ]
+                            + SHorizontalBox::Slot()
+                            .AutoWidth()
+                            .VAlign(VAlign_Center)
+                            [
+                                SNew(SButton)
+                                .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                                .ContentPadding(FMargin(6.f, 2.f))
+                                .OnClicked_Lambda([this, Idx]() -> FReply
+                                {
+                                    return OnRemoveWhitelistFolder(Idx);
+                                })
+                                [
+                                    SNew(STextBlock)
+                                    .Text(LOCTEXT("RemoveWhitelist", "Remove"))
+                                    .ColorAndOpacity(FSlateColor(AOColors::TextDim))
+                                ]
+                            ]
+                        ]
+                    ];
+            }
+        }
+    }
+
+    // Populate custom rules list
+    RebuildCustomRulesList();
+    RefreshClassSelectorOptions();
 
     // Register asset registry delegates for incremental refresh
     FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry");
@@ -359,6 +435,25 @@ TSharedRef<SWidget> SAssetOrganizerWidget::BuildToolbar()
                     FOnClicked::CreateLambda([this]() -> FReply
                     {
                         ToggleSettingsVisibility();
+                        return FReply::Handled();
+                    })
+                )
+            ]
+
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            [
+                MakeToolbarBtn(
+                    LOCTEXT("WhitelistBtn", "白名单"),
+                    LOCTEXT("WhitelistSub", "Whitelist"),
+                    FOnClicked::CreateLambda([this]() -> FReply
+                    {
+                        bIsWhitelistVisible = !bIsWhitelistVisible;
+                        if (WhitelistPanel.IsValid())
+                        {
+                            WhitelistPanel->SetVisibility(bIsWhitelistVisible
+                                ? EVisibility::Visible : EVisibility::Collapsed);
+                        }
                         return FReply::Handled();
                     })
                 )
@@ -584,11 +679,107 @@ TSharedRef<SWidget> SAssetOrganizerWidget::BuildTableHeader()
 // ─────────────────────────────────────────────────────────────────────────────
 TSharedRef<SWidget> SAssetOrganizerWidget::BuildScrollArea()
 {
+    CustomRulesContainer = SNew(SVerticalBox);
+
     return SNew(SScrollBox)
         .Orientation(Orient_Vertical)
+
+        // Built-in asset type categories
         + SScrollBox::Slot()
         [
             CategoryContainer.ToSharedRef()
+        ]
+
+        // Custom rules section
+        + SScrollBox::Slot()
+        .Padding(FMargin(0.f, 4.f, 0.f, 0.f))
+        [
+            SNew(SVerticalBox)
+
+            // Section header
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            [
+                SNew(SBorder)
+                .BorderBackgroundColor(FSlateColor(AOColors::BgCategory))
+                .Padding(FMargin(12.f, 5.f))
+                [
+                    SNew(SHorizontalBox)
+                    + SHorizontalBox::Slot()
+                    .FillWidth(1.f)
+                    .VAlign(VAlign_Center)
+                    [
+                        SNew(STextBlock)
+                        .Text(LOCTEXT("CustomRulesHeader", "Custom Rules"))
+                        .ColorAndOpacity(FSlateColor(AOColors::TextCategory))
+                    ]
+                    + SHorizontalBox::Slot()
+                    .AutoWidth()
+                    .VAlign(VAlign_Center)
+                    .Padding(FMargin(4.f, 0.f))
+                    [
+                        SNew(SButton)
+                        .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                        .ContentPadding(FMargin(6.f, 2.f))
+                        .OnClicked(this, &SAssetOrganizerWidget::OnRefreshCustomRulesClicked)
+                        [
+                            SNew(STextBlock)
+                            .Text(LOCTEXT("RefreshCustomRules", "Refresh"))
+                            .ColorAndOpacity(FSlateColor(AOColors::TextDim))
+                        ]
+                    ]
+                    + SHorizontalBox::Slot()
+                    .AutoWidth()
+                    .VAlign(VAlign_Center)
+                    .Padding(FMargin(4.f, 0.f))
+                    [
+                        SAssignNew(ClassSelectorComboBox, SComboBox<TSharedPtr<FString>>)
+                        .OptionsSource(&AssetClassOptions)
+                        .OnSelectionChanged_Lambda([this](TSharedPtr<FString> NewSelection, ESelectInfo::Type)
+                        {
+                            SelectedClassOption = NewSelection;
+                        })
+                        .OnGenerateWidget_Lambda([](TSharedPtr<FString> InOption)
+                        {
+                            return SNew(STextBlock)
+                                .Text(FText::FromString(InOption.IsValid() ? *InOption : TEXT("")))
+                                .ColorAndOpacity(FSlateColor(AOColors::TextPrimary));
+                        })
+                        .Content()
+                        [
+                            SNew(STextBlock)
+                            .Text_Lambda([this]() -> FText
+                            {
+                                return SelectedClassOption.IsValid()
+                                    ? FText::FromString(*SelectedClassOption)
+                                    : LOCTEXT("SelectClass", "Select asset class...");
+                            })
+                            .ColorAndOpacity(FSlateColor(AOColors::TextPrimary))
+                        ]
+                    ]
+                    + SHorizontalBox::Slot()
+                    .AutoWidth()
+                    .VAlign(VAlign_Center)
+                    [
+                        SNew(SButton)
+                        .ButtonColorAndOpacity(FLinearColor(0.08f, 0.28f, 0.45f, 1.f))
+                        .ContentPadding(FMargin(8.f, 2.f))
+                        .OnClicked(this, &SAssetOrganizerWidget::OnAddCustomRuleWithSelectionClicked)
+                        [
+                            SNew(STextBlock)
+                            .Text(LOCTEXT("AddCustomRuleBtn", "+ Add Rule"))
+                            .ColorAndOpacity(FSlateColor(AOColors::TextPrimary))
+                        ]
+                    ]
+                ]
+            ]
+
+            // Custom rule rows
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            [
+                CustomRulesContainer.ToSharedRef()
+            ]
         ];
 }
 
@@ -1625,8 +1816,10 @@ void SAssetOrganizerWidget::StartAsyncOrganize(bool bDryRun)
     Config.RootFolder = Settings->RootFolderConfig;
     Config.bSaveHistory = Settings->bEnableHistory && !bDryRun;
     Config.ExcludedFolders = Settings->ExcludedFolders;
+    Config.WhitelistedFolders = Settings->WhitelistedFolders;
+    Config.bUpdateWhitelistedAssetReferences = true;
 
-    // Build type map from active rows
+    // Build type map from active rows (built-in types)
     for (FAssetCategory& Cat : Categories)
     {
         for (FAssetTypeRow& Row : Cat.Rows)
@@ -1634,6 +1827,19 @@ void SAssetOrganizerWidget::StartAsyncOrganize(bool bDryRun)
             if (Row.bActive)
             {
                 Config.TypeToFolderMap.Add(Row.Type, Row.TargetPath);
+            }
+        }
+    }
+
+    // Add custom rules to type map (all custom assets share the first enabled rule's target path)
+    if (Settings)
+    {
+        for (const FCustomAssetRule& Rule : Settings->CustomRules)
+        {
+            if (Rule.bEnabled && !Rule.TargetPath.IsEmpty())
+            {
+                Config.TypeToFolderMap.Add(EAssetOrganizeType::Custom, Rule.TargetPath);
+                break; // Only one Custom target path is supported in current design
             }
         }
     }
@@ -1732,6 +1938,19 @@ void SAssetOrganizerWidget::OnAsyncComplete()
     RebuildCategoryList();
     RefreshHistoryList();
     RebuildHistoryListUI();
+
+    // Broken reference warning notification
+    if (!LastResult.bWasCancelled && LastResult.PreviewItems.Num() == 0)
+    {
+        int32 BrokenCount = LastResult.Warnings.Num();
+        if (BrokenCount > 0)
+        {
+            AppendLog(FString::Printf(TEXT("[WARN] %d broken reference(s) detected after organize."), BrokenCount));
+            ShowNotification(FText::Format(
+                LOCTEXT("BrokenRefWarn", "Warning: {0} broken reference(s) detected. Check log for details."),
+                FText::AsNumber(BrokenCount)), false);
+        }
+    }
 }
 
 void SAssetOrganizerWidget::UpdateProgressUI(float Percent, const FText& Message)
@@ -2235,11 +2454,167 @@ FReply SAssetOrganizerWidget::OnAddCustomRuleClicked()
     return FReply::Handled();
 }
 
+void SAssetOrganizerWidget::OnCustomRulesExternallyChanged()
+{
+    RebuildCustomRulesList();
+    RefreshClassSelectorOptions();
+}
+
+void SAssetOrganizerWidget::RefreshClassSelectorOptions()
+{
+    AssetClassOptions.Empty();
+    TSet<FString> UniqueNames;
+
+    // 1. Built-in asset types (62 types)
+    if (Settings)
+    {
+        for (const FAssetTypeInfo& Info : Settings->AssetTypeConfigs)
+        {
+            if (!Info.ClassName.IsNone())
+            {
+                UniqueNames.Add(Info.ClassName.ToString());
+            }
+        }
+    }
+
+    // 2. Registered asset type actions from AssetTools module
+    if (FModuleManager::Get().IsModuleLoaded("AssetTools"))
+    {
+        FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+        IAssetTools& AssetTools = AssetToolsModule.Get();
+        TArray<TWeakPtr<IAssetTypeActions>> Actions;
+        AssetTools.GetAssetTypeActionsList(Actions);
+
+        for (const TWeakPtr<IAssetTypeActions>& Action : Actions)
+        {
+            if (Action.IsValid())
+            {
+                UClass* SupportedClass = Action.Pin()->GetSupportedClass();
+                if (SupportedClass)
+                {
+                    UniqueNames.Add(SupportedClass->GetName());
+                }
+            }
+        }
+    }
+
+    // 3. Asset classes from AssetRegistry scan
+    FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry");
+    if (AssetRegistryModule)
+    {
+        IAssetRegistry& AssetRegistry = AssetRegistryModule->Get();
+        TArray<FAssetData> AssetList;
+        FARFilter Filter;
+        Filter.PackagePaths.Add(FName("/Game"));
+        Filter.bRecursivePaths = true;
+        AssetRegistry.GetAssets(Filter, AssetList);
+
+        for (const FAssetData& Asset : AssetList)
+        {
+            if (!Asset.AssetClass.IsNone())
+            {
+                UniqueNames.Add(Asset.AssetClass.ToString());
+            }
+        }
+    }
+
+    // 4. Existing custom rules
+    if (Settings)
+    {
+        for (const FCustomAssetRule& Rule : Settings->CustomRules)
+        {
+            if (!Rule.ClassName.IsEmpty())
+            {
+                UniqueNames.Add(Rule.ClassName);
+            }
+        }
+    }
+
+    // Sort and populate
+    TArray<FString> SortedNames = UniqueNames.Array();
+    SortedNames.Sort();
+
+    for (const FString& Name : SortedNames)
+    {
+        AssetClassOptions.Add(MakeShared<FString>(Name));
+    }
+
+    if (ClassSelectorComboBox.IsValid())
+    {
+        ClassSelectorComboBox->RefreshOptions();
+    }
+}
+
+FReply SAssetOrganizerWidget::OnAddCustomRuleWithSelectionClicked()
+{
+    if (!SelectedClassOption.IsValid() || SelectedClassOption->IsEmpty())
+    {
+        ShowErrorNotification(LOCTEXT("NoClassSelected", "Please select an asset class from the dropdown first."));
+        return FReply::Handled();
+    }
+
+    FString SelectedClass = *SelectedClassOption;
+
+    // Check if already exists in custom rules
+    if (Settings)
+    {
+        for (const FCustomAssetRule& Rule : Settings->CustomRules)
+        {
+            if (Rule.ClassName == SelectedClass)
+            {
+                ShowErrorNotification(FText::Format(
+                    LOCTEXT("RuleAlreadyExists", "A custom rule for '{0}' already exists."),
+                    FText::FromString(SelectedClass)));
+                return FReply::Handled();
+            }
+        }
+    }
+
+    // Derive prefix and target path from built-in type if available
+    FString Prefix = TEXT("CUSTOM_");
+    FString TargetPath = TEXT("/Game/Custom");
+
+    if (Settings)
+    {
+        for (const FAssetTypeInfo& Info : Settings->AssetTypeConfigs)
+        {
+            if (Info.ClassName.ToString() == SelectedClass)
+            {
+                Prefix = Info.Prefix;
+                TargetPath = Info.TargetPath;
+                break;
+            }
+        }
+    }
+
+    FCustomAssetRule NewRule;
+    NewRule.ClassName = SelectedClass;
+    NewRule.Prefix = Prefix;
+    NewRule.TargetPath = TargetPath;
+    NewRule.CategoryName = TEXT("Custom");
+    NewRule.bEnabled = true;
+
+    AddCustomRule(NewRule);
+    ShowNotification(FText::Format(
+        LOCTEXT("CustomRuleAddedFmt", "Custom rule for '{0}' added."),
+        FText::FromString(SelectedClass)));
+    return FReply::Handled();
+}
+
+FReply SAssetOrganizerWidget::OnRefreshCustomRulesClicked()
+{
+    RebuildCustomRulesList();
+    RefreshClassSelectorOptions();
+    ShowNotification(LOCTEXT("CustomRulesRefreshed", "Custom rules refreshed from Project Settings."));
+    return FReply::Handled();
+}
+
 void SAssetOrganizerWidget::AddCustomRule(const FCustomAssetRule& Rule)
 {
     if (Settings)
     {
         Settings->AddCustomRule(Rule);
+        Settings->PostEditChange();
         RebuildCustomRulesList();
     }
 }
@@ -2249,6 +2624,7 @@ void SAssetOrganizerWidget::RemoveCustomRule(int32 Index)
     if (Settings)
     {
         Settings->RemoveCustomRule(Index);
+        Settings->PostEditChange();
         RebuildCustomRulesList();
     }
 }
@@ -2290,6 +2666,255 @@ void SAssetOrganizerWidget::OnAssetRenamedCallback(const FAssetData& /*AssetData
         return;
 
     RefreshAssetData();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Whitelist Panel
+// ─────────────────────────────────────────────────────────────────────────────
+TSharedRef<SWidget> SAssetOrganizerWidget::BuildWhitelistPanel()
+{
+    return SNew(SBorder)
+        .BorderBackgroundColor(FSlateColor(AOColors::BgPanel))
+        .Padding(FMargin(12.f, 8.f))
+        [
+            SNew(SVerticalBox)
+
+            // Title row
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            .Padding(FMargin(0.f, 0.f, 0.f, 6.f))
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .FillWidth(1.f)
+                .VAlign(VAlign_Center)
+                [
+                    SNew(STextBlock)
+                    .Text(LOCTEXT("WhitelistTitle", "Whitelist Folders"))
+                    .Font(FCoreStyle::Get().GetFontStyle("NormalText"))
+                    .ColorAndOpacity(FSlateColor(AOColors::TextPrimary))
+                ]
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .VAlign(VAlign_Center)
+                [
+                    SNew(SButton)
+                    .ButtonColorAndOpacity(FLinearColor(0.08f, 0.28f, 0.45f, 1.f))
+                    .ContentPadding(FMargin(10.f, 3.f))
+                    .OnClicked(this, &SAssetOrganizerWidget::OnAddWhitelistFolderClicked)
+                    [
+                        SNew(STextBlock)
+                        .Text(LOCTEXT("AddWhitelistBtn", "+ Add Folder"))
+                        .ColorAndOpacity(FSlateColor(AOColors::TextPrimary))
+                    ]
+                ]
+            ]
+
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            .Padding(FMargin(0.f, 0.f, 0.f, 6.f))
+            [
+                SNew(SSeparator)
+            ]
+
+            // Description
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            .Padding(FMargin(0.f, 0.f, 0.f, 6.f))
+            [
+                SNew(STextBlock)
+                .Text(LOCTEXT("WhitelistDesc", "Assets in whitelisted folders will never be moved during organizing."))
+                .Font(FCoreStyle::Get().GetFontStyle("TinyText"))
+                .ColorAndOpacity(FSlateColor(AOColors::TextDim))
+                .AutoWrapText(true)
+            ]
+
+            // Folder list
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            [
+                SNew(SScrollBox)
+                .Orientation(Orient_Vertical)
+                + SScrollBox::Slot()
+                [
+                    SAssignNew(WhitelistContainer, SVerticalBox)
+                ]
+            ]
+        ];
+}
+
+FReply SAssetOrganizerWidget::OnAddWhitelistFolderClicked()
+{
+    if (!Settings)
+        return FReply::Handled();
+
+    IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+    if (!DesktopPlatform)
+        return FReply::Handled();
+
+    FString OutFolder;
+    const void* ParentWindowHandle = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr);
+    const bool bOpened = DesktopPlatform->OpenDirectoryDialog(
+        ParentWindowHandle,
+        TEXT("Select Whitelist Folder"),
+        FPaths::ProjectContentDir(),
+        OutFolder
+    );
+
+    if (!bOpened || OutFolder.IsEmpty())
+        return FReply::Handled();
+
+    // Convert absolute disk path to /Game/ relative path
+    FString ContentDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir());
+    FPaths::NormalizeDirectoryName(ContentDir);
+    FPaths::NormalizeDirectoryName(OutFolder);
+    // Ensure both paths use the same slash style for reliable comparison on Windows
+    ContentDir = ContentDir.Replace(TEXT("\\"), TEXT("/"));
+    OutFolder  = OutFolder.Replace(TEXT("\\"), TEXT("/"));
+
+    FString GamePath;
+    if (FPaths::IsUnderDirectory(OutFolder, ContentDir))
+    {
+        FString Relative = OutFolder.Mid(ContentDir.Len());
+        Relative.RemoveFromStart(TEXT("/"));
+        GamePath = TEXT("/Game/") + Relative;
+    }
+    else
+    {
+        // Fallback: use as-is if outside Content dir
+        GamePath = OutFolder;
+    }
+
+    // Avoid duplicates
+    if (!Settings->WhitelistedFolders.Contains(GamePath))
+    {
+        Settings->WhitelistedFolders.Add(GamePath);
+        Settings->SaveConfig();
+        WhitelistFolders = Settings->WhitelistedFolders;
+
+        // Rebuild list UI
+        if (WhitelistContainer.IsValid())
+        {
+            WhitelistContainer->ClearChildren();
+            for (int32 i = 0; i < WhitelistFolders.Num(); ++i)
+            {
+                const FString FolderPath = WhitelistFolders[i];
+                const int32 Idx = i;
+                WhitelistContainer->AddSlot()
+                    .AutoHeight()
+                    .Padding(FMargin(0.f, 1.f))
+                    [
+                        SNew(SBorder)
+                        .BorderBackgroundColor(FSlateColor(AOColors::BgRow))
+                        .Padding(FMargin(8.f, 3.f))
+                        [
+                            SNew(SHorizontalBox)
+                            + SHorizontalBox::Slot()
+                            .FillWidth(1.f)
+                            .VAlign(VAlign_Center)
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(FolderPath))
+                                .Font(FCoreStyle::Get().GetFontStyle("Mono"))
+                                .ColorAndOpacity(FSlateColor(AOColors::TextSecondary))
+                            ]
+                            + SHorizontalBox::Slot()
+                            .AutoWidth()
+                            .VAlign(VAlign_Center)
+                            [
+                                SNew(SButton)
+                                .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                                .ContentPadding(FMargin(6.f, 2.f))
+                                .OnClicked_Lambda([this, Idx]() -> FReply
+                                {
+                                    return OnRemoveWhitelistFolder(Idx);
+                                })
+                                [
+                                    SNew(STextBlock)
+                                    .Text(LOCTEXT("RemoveWhitelist", "Remove"))
+                                    .ColorAndOpacity(FSlateColor(AOColors::TextDim))
+                                ]
+                            ]
+                        ]
+                    ];
+            }
+        }
+
+        ShowNotification(FText::Format(
+            LOCTEXT("WhitelistAdded", "Added to whitelist: {0}"),
+            FText::FromString(GamePath)));
+    }
+    else
+    {
+        ShowNotification(LOCTEXT("WhitelistDuplicate", "Folder already in whitelist."), false);
+    }
+
+    return FReply::Handled();
+}
+
+FReply SAssetOrganizerWidget::OnRemoveWhitelistFolder(int32 Index)
+{
+    if (!Settings || !Settings->WhitelistedFolders.IsValidIndex(Index))
+        return FReply::Handled();
+
+    FString Removed = Settings->WhitelistedFolders[Index];
+    Settings->WhitelistedFolders.RemoveAt(Index);
+    Settings->SaveConfig();
+    WhitelistFolders = Settings->WhitelistedFolders;
+
+    // Rebuild list UI
+    if (WhitelistContainer.IsValid())
+    {
+        WhitelistContainer->ClearChildren();
+        for (int32 i = 0; i < WhitelistFolders.Num(); ++i)
+        {
+            const FString FolderPath = WhitelistFolders[i];
+            const int32 Idx = i;
+            WhitelistContainer->AddSlot()
+                .AutoHeight()
+                .Padding(FMargin(0.f, 1.f))
+                [
+                    SNew(SBorder)
+                    .BorderBackgroundColor(FSlateColor(AOColors::BgRow))
+                    .Padding(FMargin(8.f, 3.f))
+                    [
+                        SNew(SHorizontalBox)
+                        + SHorizontalBox::Slot()
+                        .FillWidth(1.f)
+                        .VAlign(VAlign_Center)
+                        [
+                            SNew(STextBlock)
+                            .Text(FText::FromString(FolderPath))
+                            .Font(FCoreStyle::Get().GetFontStyle("Mono"))
+                            .ColorAndOpacity(FSlateColor(AOColors::TextSecondary))
+                        ]
+                        + SHorizontalBox::Slot()
+                        .AutoWidth()
+                        .VAlign(VAlign_Center)
+                        [
+                            SNew(SButton)
+                            .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                            .ContentPadding(FMargin(6.f, 2.f))
+                            .OnClicked_Lambda([this, Idx]() -> FReply
+                            {
+                                return OnRemoveWhitelistFolder(Idx);
+                            })
+                            [
+                                SNew(STextBlock)
+                                .Text(LOCTEXT("RemoveWhitelist", "Remove"))
+                                .ColorAndOpacity(FSlateColor(AOColors::TextDim))
+                            ]
+                        ]
+                    ]
+                ];
+        }
+    }
+
+    ShowNotification(FText::Format(
+        LOCTEXT("WhitelistRemoved", "Removed from whitelist: {0}"),
+        FText::FromString(Removed)));
+
+    return FReply::Handled();
 }
 
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION

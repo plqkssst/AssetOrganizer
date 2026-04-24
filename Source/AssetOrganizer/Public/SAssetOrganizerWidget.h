@@ -101,6 +101,7 @@ private:
     TSharedRef<SWidget> BuildLogPanel();
     TSharedRef<SWidget> BuildHistoryPanel();
     TSharedRef<SWidget> BuildPreviewPanel();
+    TSharedRef<SWidget> BuildWhitelistPanel();
 
     /** Rebuild the entire category/row list inside the scroll box */
     void                RebuildCategoryList();
@@ -117,6 +118,8 @@ private:
     FReply OnShowHistoryClicked();
     FReply OnRollbackClicked();
     FReply OnAddCustomRuleClicked();
+    FReply OnAddWhitelistFolderClicked();
+    FReply OnRemoveWhitelistFolder(int32 Index);
 
     /** Jump Content Browser to folder and select all matching assets */
     void FocusAndSelectAssets(const FString& FolderPath, EAssetOrganizeType Type);
@@ -165,6 +168,10 @@ private:
     void AddCustomRule(const FCustomAssetRule& Rule);
     void RemoveCustomRule(int32 Index);
     void RebuildCustomRulesList();
+    void OnCustomRulesExternallyChanged();
+    void RefreshClassSelectorOptions();
+    FReply OnAddCustomRuleWithSelectionClicked();
+    FReply OnRefreshCustomRulesClicked();
 
     // ── Log ───────────────────────────────────────────────────────────────────
     void AppendLog(const FString& Message);
@@ -175,6 +182,7 @@ private:
     // ── Data ──────────────────────────────────────────────────────────────────
     TArray<FAssetCategory> Categories;
     TArray<FCustomAssetRule> CustomRules;
+    TArray<FString> WhitelistFolders;
     TArray<FHistoryListItem> HistoryItems;
 
     /** Settings reference */
@@ -185,6 +193,11 @@ private:
 
     /** Custom rules container */
     TSharedPtr<SVerticalBox> CustomRulesContainer;
+
+    /** Asset class selector for adding custom rules */
+    TSharedPtr<class SComboBox<TSharedPtr<FString>>> ClassSelectorComboBox;
+    TArray<TSharedPtr<FString>> AssetClassOptions;
+    TSharedPtr<FString> SelectedClassOption;
 
     /** Log text box */
     TSharedPtr<SMultiLineEditableTextBox> LogTextBox;
@@ -217,6 +230,9 @@ private:
     /** Settings panel */
     bool bIsSettingsVisible = false;
     TSharedPtr<SBox> SettingsPanel;
+    TSharedPtr<SBox> WhitelistPanel;
+    TSharedPtr<SVerticalBox> WhitelistContainer;
+    bool bIsWhitelistVisible = false;
     TSharedPtr<SVerticalBox> PreviewListContainer;
     TArray<FMovePreviewItem> CurrentPreviewItems;
 

@@ -29,6 +29,8 @@ public class AssetOrganizer : ModuleRules
                 "UMG",
                 "Niagara",
                 "LevelSequence",
+                "DeveloperSettings",
+                "PropertyEditor",
             }
         );
 

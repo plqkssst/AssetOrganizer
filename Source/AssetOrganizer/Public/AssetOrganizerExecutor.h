@@ -167,6 +167,27 @@ public:
         const TArray<FCustomAssetRule>* CustomRules = nullptr
     );
 
+    /** ========== Whitelist / Reference Verification (Phase 2.1) ========== */
+
+    /** Check if an asset lives inside a whitelisted folder (prefix match).
+     *  Returns true if the asset should be skipped during organize. */
+    static bool IsAssetWhitelisted(const FAssetData& Asset, const FOrganizeConfig& Config);
+
+    /** Post-organize verification: scan all moved assets via AssetRegistry for broken deps.
+     *  Populates OutReport.BrokenReferences; optionally auto-fixes via redirectors. */
+    static void VerifyReferences(
+        const TArray<FMovedAssetRecord>& MovedAssets,
+        FOrganizeReport& OutReport
+    );
+
+    /** After all moves, scan whitelisted-folder assets and fixup any redirectors
+     *  pointing to the old paths of moved assets. */
+    static void UpdateWhitelistedFolderReferences(
+        const FOrganizeConfig& Config,
+        const FOrganizeReport& Report,
+        const FOnLog& LogCallback = FOnLog()
+    );
+
     /** ========== Utility ========== */
 
     /** Get history directory path */
@@ -182,6 +203,9 @@ private:
     static TAtomic<bool> bCancelRequested;
     static FCriticalSection AsyncLock;
     static TSharedPtr<FAsyncTask<class FOrganizeAssetsTask>> CurrentAsyncTask;
+
+    /** Attempt to auto-fix broken references found in VerifyReferences() */
+    static void AttemptAutoFixBrokenReferences(FOrganizeReport& OutReport);
 
     /** Check if asset A depends on asset B */
     static bool DoesAssetDependOn(const FAssetData& AssetA, const FAssetData& AssetB);
