@@ -104,7 +104,7 @@ UE4.27 资源整理插件 — 自动按类型组织项目资源的高级工具
 
 自定义规则用于处理引擎内置 62 种类型之外的自定义 C++ 或 Blueprint 资产类。
 
-自定义规则使用.md
+https://github.com/plqkssst/AssetOrganizer/blob/master/%E8%87%AA%E5%AE%9A%E4%B9%89%E8%A7%84%E5%88%99%E4%BD%BF%E7%94%A8.md
 
 #### 在插件面板中添加
 
