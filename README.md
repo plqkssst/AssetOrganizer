@@ -4,7 +4,7 @@ UE4.27 资源整理插件 — 自动按类型组织项目资源的高级工具
 
 支持一键整理、预览模式、白名单、自定义规则、版本回溯，以及与 Project Settings 的完整集成。
 
-<img width="1920" height="1032" alt="界面" src="https://github.com/user-attachments/assets/3947b4fe-6a7c-4f58-9294-94132b2f57db" />
+<img width="1920" height="1032" alt="V2 01" src="https://github.com/user-attachments/assets/313206c1-a2b5-4030-b46b-c231c4e01d16" />
 
 ---
 
