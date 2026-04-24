@@ -1,4 +1,4 @@
-# Asset Organizer v2.0 for UE4.27
+# Asset Organizer v2.01 for UE4.27
 
 UE4.27 资源整理插件 — 自动按类型组织项目资源的高级工具
 
